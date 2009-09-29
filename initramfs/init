@@ -1,0 +1,186 @@
+#!/bin/sh
+#
+# initramfs /init for Concurrent Technology SBC.
+# Written by Jared Nance, June 16, 2009.
+
+# color codes and some predefined texts
+BOLD="\033[1m"
+NORM="\033[0m"
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+PURPLE="\033[0;35m"
+OK="${BOLD}${GREEN}OK${NORM}"
+FAILED="${BOLD}${RED}FAILED${NORM}"
+DONE="${BOLD}${GREEN}DONE${NORM}"
+
+# Helper functions.
+do_or_die()
+{
+	printf "\t%-66s" "$1"
+	$2 > /dev/null && success || failure 
+}
+
+success()
+{
+	printf "$OK\n"
+}
+
+failure()
+{
+	printf "$FAILED\n"
+	rescue_shell
+}
+
+checkLastExit()
+{
+	test $? -eq 0 && success || failure 
+}
+
+rescue_shell()
+{
+	echo -e "${YELLOW} ${BOLD} Uh oh.${NORM}  Something went wrong.  Dropping you into a shell(ash)..."
+	busybox --install -s
+	exec /bin/sh
+}
+
+startsplash()
+{
+	sleep 3
+	printf "\n"
+	printf "Welcome to ${PURPLE}UW${NORM} InitramFS for SBC Systems.  Starting up...  \n"
+	printf "------------------------------------------------------------------------------\n"
+	sleep 3
+}
+
+start_mdev()
+{
+	mdev -s
+}
+
+register_mdev()
+{
+	echo /bin/mdev > /proc/sys/kernel/hotplug
+}
+
+post_checksum()
+{
+	printf "\tAll set up to begin writing to disk.\n"
+	printf "\tWithout user intervention in the next 30 seconds, the hard drive\n"
+	printf "\ton this single board computer will be completely overwritten!\n"
+	printf "\tThis is a totally irreversible operation - if you are unsure, stop\n"
+	printf "\tthis madness now... Ctrl-C to kill the countdown.\n"
+	printf "\n"
+	for i in $(seq 20 30 | sort -nr); do
+		sleep 1
+		printf "$GREEN$i " 
+	done
+	for i in $(seq 10 19 | sort -nr); do
+	  sleep 1
+	  printf "$YELLOW$i "
+	done
+	for i in $(seq 1 9 | sort -nr); do
+	  sleep 1
+	  printf "$RED$i "
+	done
+	printf "$NORM\n"
+}
+
+drivecopy()
+{
+  	printf "\t%-66s" "Copying disk image to hard drive..."
+  	test -z $hdsuffix && failure 
+	zcat /mnt/key/image.gz | dd of=/dev/$hdsuffix bs=4M conv=fsync &>/dev/null 
+	checkLastExit	
+}
+
+abort()
+{
+	printf "$NORM User killed startup." 
+	/bin/busybox --install -s
+	exec /bin/sh
+}
+
+countdown5()
+{
+	for i in 5 4 3 2 1
+	do
+		sleep 1
+		if [ $i -eq 1 ]
+		then
+			echo -ne $i${NORM}
+			echo -e "\t ${DONE}"
+		else
+			echo -ne ${YELLOW}$i
+			echo -ne " "
+		fi
+	done
+}
+
+chroot_and_build()
+{
+  test -z $rootpart && return 1
+  rootdev=$(echo $rootpart | cut -c 1-3)
+  swapfspart=$rootdev$(( $(echo $rootpart | tr [a-z] 0) + 1 ))
+  homefspart=$rootdev$(( $(echo $rootpart | tr [a-z] 0) + 2 ))
+  chroot /mnt/root /bin/mount -t tmpfs none /dev || return 1
+  cp -R /dev/* /mnt/root/dev
+  chroot /mnt/root /sbin/mkswap /dev/$swapfspart || return 1
+  chroot /mnt/root /sbin/swapon /dev/$swapfspart || return 1
+  chroot /mnt/root /sbin/mkfs.xfs -f /dev/$homefspart || return 1
+  mount /dev/$homefspart /mnt/root/home
+  chroot /mnt/root /bin/mkdir /home/daq || return 1
+  chroot /mnt/root /bin/chown daq:users /home/daq || return 1 
+  chroot /mnt/root /bin/chmod -R o+rw /home/daq || return 1
+}
+
+final_exit()
+{
+  umount /mnt/root/proc
+  umount /mnt/root/sys
+  umount -l /mnt/root
+  umount /dev/sdb1 
+  while true
+  do
+    test `dmesg | tail | grep unregistering > /dev/null` && break
+  done
+  return true
+}
+#Be flashy at the beginning.
+startsplash
+
+# Get a controlling TTY
+exec < /dev/console > /dev/console 2>&1
+
+# Mount the /proc and /sys filesystems.
+do_or_die "Mounting proc at /proc..." "mount -t proc none /proc"
+do_or_die "Mounting sysfs at /sys..." "mount -t sysfs none /sys"
+
+# mdev
+printf "\tAllowing devices to settle:\n%30s"
+countdown5
+do_or_die "Starting mdev and populating device nodes..." "start_mdev"
+register_mdev
+do_or_die "Registering mdev as kernel hotplug agent..." "grep /bin/mdev /proc/sys/kernel/hotplug"
+
+# find the name of the hard drive.  it's NOT a usb drive, but there's only one
+# present...
+hdsuffix=$(find /sys/devices -name '*sd[a-z]' -type d | grep -v usb | tr '\/' ' ' | awk '{print $NF}')
+do_or_die "Searching for hard drive..." "test -b /dev/$hdsuffix"
+
+usbsuffix=$(find /sys/devices -name '*sd[a-z]1' -type d | grep usb | tr '\/' ' ' | awk '{print $NF}') 
+do_or_die "Searching for attached USB drive..." "test -b /dev/$usbsuffix"
+do_or_die "Mounting USB drive at /mnt/key..." "mount /dev/$usbsuffix /mnt/key"
+do_or_die "Checksumming disk image..." "md5sum -sc /mnt/key/image.gz.md5"
+drivecopy
+
+rootpart=$(echo $hdsuffix | sed -e 's:\(sd[a-z]\):\11:g')
+do_or_die "Mounting hard drive at /mnt/root..." "mount /dev/$rootpart /mnt/root"
+do_or_die "Mounting /proc to /mnt/root/proc..." "mount -o bind -t proc /proc /mnt/root/proc"
+do_or_die "Mounting /sys to /mnt/root/sys..." "mount -o bind -t sysfs /sys /mnt/root/sys"
+do_or_die "Entering new environment to make filesystems..." "chroot_and_build"
+do_or_die "$YELLOW Done!  Please remove the USB stick, and the system will reboot automatically.$NORM" "final_exit"
+
+echo "1" > /proc/sys/kernel/panic
+exit

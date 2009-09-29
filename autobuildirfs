@@ -1,0 +1,9 @@
+#!/bin/bash
+
+#cd to the initramfs dir and build the cpio archive.  For now, uncompressed.
+cd initramfs
+find . -print0 | cpio --format newc -ov -0 | gzip -9 > ../initramfs.igz
+cd ../initramfs_maint
+find . -print0 | cpio --format newc -ov -0 | gzip -9 > ../initramfs_maint.igz
+cd ../
+chmod +x initramfs{,_maint}.igz

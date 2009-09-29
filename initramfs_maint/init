@@ -1,0 +1,141 @@
+#!/bin/sh
+#
+# initramfs /init for Concurrent Technology SBC.
+# Written by Jared Nance, June 16, 2009.
+
+# color codes and some predefined texts
+BOLD="\033[1m"
+NORM="\033[0m"
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+PURPLE="\033[0;35m"
+OK="${BOLD}${GREEN}OK${NORM}"
+FAILED="${BOLD}${RED}FAILED${NORM}"
+DONE="${BOLD}${GREEN}DONE${NORM}"
+
+# Helper functions.
+do_or_die()
+{
+	printf "\t%-66s" "$1"
+	$2 > /dev/null && success || failure 
+}
+
+success()
+{
+	printf "$OK\n"
+}
+
+failure()
+{
+	printf "$FAILED\n"
+	rescue_shell
+}
+
+checkLastExit()
+{
+	test $? -eq 0 && success || failure 
+}
+
+rescue_shell()
+{
+	echo -e "${YELLOW} ${BOLD} Uh oh.${NORM}  Something went wrong.  Dropping you into a shell(ash)..."
+	busybox --install -s
+	exec /bin/sh
+}
+
+startsplash()
+{
+	sleep 3
+	printf "\n"
+	printf "Welcome to ${PURPLE}UW${NORM} InitramFS for SBC Systems.  Starting up...  \n"
+	printf "------------------------------------------------------------------------------\n"
+	sleep 3
+}
+
+start_mdev()
+{
+	mdev -s
+}
+
+register_mdev()
+{
+	echo /bin/mdev > /proc/sys/kernel/hotplug
+}
+
+post_checksum()
+{
+	printf "\tAll set up to begin writing to disk.\n"
+	printf "\tWithout user intervention in the next 30 seconds, the hard drive\n"
+	printf "\ton this single board computer will be completely overwritten!\n"
+	printf "\tThis is a totally irreversible operation - if you are unsure, stop\n"
+	printf "\tthis madness now... Ctrl-C to kill the countdown.\n"
+	printf "\n"
+	trap abort_countdown 2
+	for i in $(seq 20 30 | sort -nr); do
+		sleep 1
+		printf "$GREEN$i " 
+	done
+	for i in $(seq 10 19 | sort -nr); do
+	  sleep 1
+	  printf "$YELLOW$i "
+	done
+	for i in $(seq 1 9 | sort -nr); do
+	  sleep 1
+	  printf "$RED$i "
+	done
+	printf "$NORM\n"
+}
+
+drivecopy()
+{
+  	printf "\t%-66s" "Copying disk image to hard drive..."
+  	test -z $hdsuffix && failure 
+	cd /mnt/key
+	zcat image.gz | dd of=/dev/$hdsuffix bs=4M > /dev/null
+	checkLastExit	
+}
+
+abort_countdown()
+{
+	printf "$NORM Countdown killed.  Dumping to shell(ash)...\n"
+	/bin/busybox --install -s
+	exec /bin/sh
+}
+
+countdown5()
+{
+	for i in 5 4 3 2 1
+	do
+		sleep 1
+		if [ $i -eq 1 ]
+		then
+			echo -ne $i${NORM}
+			echo -e "\t ${DONE}"
+		else
+			echo -ne ${YELLOW}$i
+			echo -ne " "
+		fi
+	done
+}
+#Be flashy at the beginning.
+startsplash
+
+# Get a controlling TTY
+exec < /dev/console > /dev/console 2>&1
+
+# Mount the /proc and /sys filesystems.
+do_or_die "Mounting proc at /proc..." "mount -t proc none /proc"
+do_or_die "Mounting sysfs at /sys..." "mount -t sysfs none /sys"
+
+# mdev
+printf "\tAllowing devices to settle:\n%30s"
+countdown5
+do_or_die "Starting mdev and populating device nodes..." "start_mdev"
+register_mdev
+do_or_die "Registering mdev as kernel hotplug agent..." "grep /bin/mdev /proc/sys/kernel/hotplug"
+
+# Setup symlinks
+/bin/busybox --install -s
+exec /bin/sh
