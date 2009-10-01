@@ -141,6 +141,10 @@ final_exit()
   umount /mnt/root/sys
   umount -l /mnt/root
   umount /dev/sdb1 
+  # Instead, maybe do while test -b /dev/$usbsuffix
+  # mdev is registered to do kernel hotplug, so the dev
+  # node should disappear when stick is removed.
+  # need to test.
   while true
   do
     test `dmesg | tail | grep unregistering > /dev/null` && break
@@ -182,5 +186,10 @@ do_or_die "Mounting /sys to /mnt/root/sys..." "mount -o bind -t sysfs /sys /mnt/
 do_or_die "Entering new environment to make filesystems..." "chroot_and_build"
 do_or_die "$YELLOW Done!  Please remove the USB stick, and the system will reboot automatically.$NORM" "final_exit"
 
-echo "1" > /proc/sys/kernel/panic
-exit
+# Old, nasty method - ask kernel to reboot on panic and then manually
+# panic.  Better to bypass init once all filesystems are unmounted.
+# echo "1" > /proc/sys/kernel/panic
+# exit
+
+# This line will not be executed until the final do_or_die has finished.
+reboot -f
